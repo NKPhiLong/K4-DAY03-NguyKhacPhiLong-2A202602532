@@ -21,7 +21,8 @@ class MCPAcademicServer:
     def __init__(self, server_name: str = "vinuni-academic-mcp-server"):
         self.server_name = server_name
         self.version = "2026.1.0"
-        
+        self._request_id = 0  # Bộ đếm id cho từng request JSON-RPC
+
     def list_tools(self) -> List[Dict[str, Any]]:
         """Trả về danh sách các Tools chuẩn giao thức MCP"""
         return TOOLS_SCHEMA
@@ -39,7 +40,36 @@ class MCPAcademicServer:
         # 3. Đóng gói phản hồi và trả về Dict theo đúng chuẩn giao thức MCP JSON-RPC 2.0:
         #    - Các trường bắt buộc: "jsonrpc": "2.0", "server": self.server_name, "tool": tool_name, "result": content
         # --------------------------------------------------------------------------
-        return {}
+        self._request_id += 1
+        request_id = self._request_id
+
+        # Bước 1: Chuyển tiếp request "tools/call" tới Tool Router (Execution Layer)
+        raw_result = dispatch_tool_call(tool_name, arguments or {})
+
+        # Bước 2: Parse chuỗi JSON kết quả thành Python dict (phòng khi tool trả text thuần)
+        try:
+            content = json.loads(raw_result)
+        except (json.JSONDecodeError, TypeError):
+            content = {"status": "RAW_TEXT", "content": str(raw_result)}
+
+        # Bước 3: Đóng gói phản hồi theo chuẩn MCP JSON-RPC 2.0
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "server": self.server_name,
+            "method": "tools/call",
+            "tool": tool_name,
+            "result": content
+        }
+
+        # Tool không tồn tại / lỗi thực thi -> bổ sung trường "error" chuẩn JSON-RPC
+        status = content.get("status") if isinstance(content, dict) else None
+        if status == "UNKNOWN_TOOL":
+            response["error"] = {"code": -32601, "message": content.get("error", "Method not found")}
+        elif status == "EXECUTION_ERROR":
+            response["error"] = {"code": -32603, "message": content.get("error", "Internal error")}
+
+        return response
 
 
 if __name__ == "__main__":
